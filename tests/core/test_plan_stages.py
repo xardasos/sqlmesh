@@ -5,7 +5,7 @@ from pytest_mock.plugin import MockerFixture
 
 from sqlmesh.core.config import EnvironmentSuffixTarget
 from sqlmesh.core.config.common import VirtualEnvironmentMode
-from sqlmesh.core.model import SqlModel, ModelKindName
+from sqlmesh.core.model import SqlModel, ModelKindName, ViewKind
 from sqlmesh.core.plan.common import SnapshotIntervalClearRequest
 from sqlmesh.core.plan.definition import EvaluatablePlan
 from sqlmesh.core.plan.stages import (
@@ -2188,3 +2188,87 @@ def test_adjust_intervals_should_force_rebuild(make_snapshot, mocker: MockerFixt
     (snapshot, intervals) = next(iter(backfill_stages[0].snapshot_to_intervals.items()))
     assert not snapshot.intervals
     assert intervals == [(to_timestamp("2023-01-01"), to_timestamp("2023-01-02"))]
+
+
+def test_view_metadata_changes_should_not_trigger_schema_migration(
+    make_snapshot, mocker: MockerFixture
+) -> None:
+    state_reader = mocker.Mock(spec=StateReader)
+
+    old_snapshot = make_snapshot(
+        SqlModel(
+            name="test_model",
+            query=parse_one("select 1 as         col_a"),
+            kind=ViewKind(materialized=True),
+        )
+    )
+    old_snapshot.categorize_as(SnapshotChangeCategory.BREAKING)
+    state_reader.get_snapshots.return_value = {}
+
+    new_snapshot = make_snapshot(
+        SqlModel(
+            name="test_model",
+            # update formatting of the query
+            query=parse_one("select 1 as col_a"),
+            kind=ViewKind(materialized=True),
+        )
+    )
+
+    new_snapshot.categorize_as(SnapshotChangeCategory.METADATA)
+    new_snapshot.version = old_snapshot.version
+    new_snapshot.previous_versions = old_snapshot.all_versions
+
+    existing_environment = Environment(
+        name="prod",
+        snapshots=[old_snapshot.table_info],
+        start_at="2023-01-01",
+        end_at="2023-01-02",
+        plan_id="previous_plan",
+        promoted_snapshot_ids=[old_snapshot.snapshot_id],
+        finalized_ts=to_timestamp("2023-01-02"),
+    )
+    state_reader.get_environment.return_value = existing_environment
+
+    environment = Environment(
+        snapshots=[new_snapshot.table_info],
+        start_at="2023-01-01",
+        end_at="2023-01-02",
+        plan_id="test_plan",
+        previous_plan_id="previous_plan",
+        promoted_snapshot_ids=[new_snapshot.snapshot_id],
+    )
+
+    plan = EvaluatablePlan(
+        start="2023-01-01",
+        end="2023-01-02",
+        new_snapshots=[new_snapshot],
+        environment=environment,
+        no_gaps=False,
+        skip_backfill=False,
+        empty_backfill=False,
+        restatements={},
+        restate_all_snapshots=False,
+        is_dev=False,
+        allow_destructive_models=set(),
+        allow_additive_models=set(),
+        forward_only=False,
+        end_bounded=False,
+        ensure_finalized_snapshots=False,
+        ignore_cron=False,
+        directly_modified_snapshots=[],
+        indirectly_modified_snapshots={},
+        metadata_updated_snapshots=[new_snapshot.snapshot_id],
+        removed_snapshots=[],
+        requires_backfill=True,
+        models_to_backfill=None,
+        execution_time="2023-01-02",
+        disabled_restatement_models=set(),
+        environment_statements=None,
+        user_provided_flags=None,
+    )
+
+    stages = build_plan_stages(plan, state_reader, None)
+
+    # No MigrateSchemasStage should be created since we only have metadata changes
+    virtual_stages = [stage for stage in stages if isinstance(stage, MigrateSchemasStage)]
+    assert len(virtual_stages) == 0
