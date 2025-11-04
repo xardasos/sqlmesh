@@ -274,8 +274,15 @@ class PlanStagesBuilder:
             after_promote_snapshots = all_selected_for_backfill_snapshots - before_promote_snapshots
             deployability_index = DeployabilityIndex.all_deployable()
 
+            modified_snapshot_ids = [
+                s.snapshot_id
+                for s in set(plan.indirectly_modified_snapshots.values())
+                | set(plan.directly_modified_snapshots)
+            ]
             snapshot_ids_with_schema_migration = [
-                s.snapshot_id for s in snapshots.values() if s.requires_schema_migration_in_prod
+                s.snapshot_id
+                for s in snapshots.values()
+                if s.requires_schema_migration_in_prod(s.snapshot_id in modified_snapshot_ids)
             ]
             # Include all upstream dependencies of snapshots that require schema migration to make sure
             # the upstream tables are created before the schema updates are applied
