@@ -1335,6 +1335,19 @@ class Snapshot(PydanticModel, SnapshotInfoMixin):
         """Returns whether or not this snapshot contains metadata changes in relation to the other snapshot."""
         return self.fingerprint.metadata_hash != other.fingerprint.metadata_hash
 
+    def requires_schema_migration_in_prod(self, is_modified: bool) -> bool:
+        """Returns whether or not this snapshot requires a schema migration when deployed to production."""
+        return (
+            self.supports_schema_migration_in_prod
+            and (
+                (self.previous_version and self.previous_version.version == self.version)
+                or self.model.forward_only
+                or bool(self.model.physical_version)
+                or not self.virtual_environment_mode.is_full
+            )
+            and (not self.is_view or is_modified)
+        )
+
     @property
     def physical_schema(self) -> str:
         if self.physical_schema_ is not None:
@@ -1510,16 +1523,6 @@ class Snapshot(PydanticModel, SnapshotInfoMixin):
     def supports_schema_migration_in_prod(self) -> bool:
         """Returns whether or not this snapshot supports schema migration when deployed to production."""
         return self.is_paused and self.is_model and not self.is_symbolic and not self.is_seed
-
-    @property
-    def requires_schema_migration_in_prod(self) -> bool:
-        """Returns whether or not this snapshot requires a schema migration when deployed to production."""
-        return self.supports_schema_migration_in_prod and (
-            (self.previous_version and self.previous_version.version == self.version)
-            or self.model.forward_only
-            or bool(self.model.physical_version)
-            or not self.virtual_environment_mode.is_full
-        )
 
     @property
     def ttl_ms(self) -> int:
